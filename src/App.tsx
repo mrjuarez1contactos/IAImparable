@@ -19,36 +19,48 @@ const fileToBase64 = (file: File | Blob): Promise<string> => {
     });
 };
 
-const App: React.FC = () => {
-    // Estado principal para la aplicación
-    const [file, setFile] = useState<File | null>(null);
-    const [videoUrl, setVideoUrl] = useState<string>(''); // Nuevo estado para la URL del video
-    const [transcription, setTranscription] = useState<string>('');
-    const [rewrittenContent, setRewrittenContent] = useState<string>(''); // Antes businessSummary
-    const [status, setStatus] = useState<string>('Por favor, ingresa un link o selecciona un archivo de audio.');
-    const [isLoading, setIsLoading] = useState<boolean>(false);
-    const [audioPreviewUrl, setAudioPreviewUrl] = useState<string>(''); // Para reproducir el audio subido
+// Define la configuración de seguridad usando los Enums importados
+const safetySettings = [
+    {
+      category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+      threshold: HarmBlockThreshold.BLOCK_NONE,
+    },
+    {
+      category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+      threshold: HarmBlockThreshold.BLOCK_NONE,
+    },
+    {
+      category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+      threshold: HarmBlockThreshold.BLOCK_NONE,
+    },
+    {
+      category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+      threshold: HarmBlockThreshold.BLOCK_NONE,
+    },
+];
 
-    // Estado para mejoras temporales
+const App: React.FC = () => {
+    const [file, setFile] = useState<File | null>(null);
+    const [videoUrl, setVideoUrl] = useState<string>(''); // Nuevo estado para la URL
+    const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null); // Nuevo estado para previsualización
+    const [transcription, setTranscription] = useState<string>('');
+    const [rewrittenContent, setRewrittenContent] = useState<string>(''); // Renombrado de businessSummary
+    const [status, setStatus] = useState<string>('Por favor, selecciona un archivo de audio o pega un link de video.');
+    const [isLoading, setIsLoading] = useState<boolean>(false);
+
+    // State for summary improvements
     const [improvementInstruction, setImprovementInstruction] = useState('');
     const [isRecording, setIsRecording] = useState(false);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const audioInstructionBlobRef = useRef<Blob | null>(null);
 
-    // Estado para instrucciones permanentes
+    // State for permanent instructions
     const [globalInstructions, setGlobalInstructions] = useState<string[]>([]);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [newInstruction, setNewInstruction] = useState('');
     const importFileInputRef = useRef<HTMLInputElement>(null);
 
-    // Definición de la configuración de seguridad (para evitar PROHIBITED_CONTENT)
-    const safetySettings = [
-        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE, },
-        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE, },
-        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE, },
-        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE, },
-    ];
 
     useEffect(() => {
         try {
@@ -69,108 +81,113 @@ const App: React.FC = () => {
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = event.target.files?.[0];
         if (selectedFile) {
+            // Limpia la URL cuando se sube un archivo
+            setVideoUrl(''); 
             setFile(selectedFile);
-            setVideoUrl(''); // Limpiar URL si se sube archivo
             setTranscription('');
             setRewrittenContent('');
             setStatus(`Archivo seleccionado: ${selectedFile.name}`);
-            
-            // Crear URL de previsualización para el audio
+
+            // Previsualización de audio
             if (audioPreviewUrl) {
                 URL.revokeObjectURL(audioPreviewUrl);
             }
-            const newPreviewUrl = URL.createObjectURL(selectedFile);
-            setAudioPreviewUrl(newPreviewUrl);
+            setAudioPreviewUrl(URL.createObjectURL(selectedFile));
         }
     };
-    
+
     const handleUrlChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const url = event.target.value;
         setVideoUrl(url);
+
+        // Limpia el archivo cuando se ingresa una URL
         if (url) {
-            setFile(null); // Limpiar archivo si se ingresa URL
-            setAudioPreviewUrl(''); // Limpiar previsualización
+            setFile(null);
+            if (audioPreviewUrl) {
+                URL.revokeObjectURL(audioPreviewUrl);
+                setAudioPreviewUrl(null);
+            }
         }
+        setTranscription('');
+        setRewrittenContent('');
+        setStatus(url ? `URL ingresada: ${url}` : 'Por favor, selecciona un archivo de audio o pega un link de video.');
     };
 
     const handleTranscribe = async () => {
         if (!file && !videoUrl) {
-            setStatus('Por favor, ingresa una URL o selecciona un archivo primero.');
+            setStatus('Por favor, selecciona un archivo o ingresa una URL.');
             return;
         }
 
         setIsLoading(true);
+        setStatus(`Transcribiendo...`);
         setTranscription('');
         setRewrittenContent('');
 
         try {
             const ai = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
-            let audioPart: Part | undefined;
-            let initialPrompt: string = "Transcribe este audio. Si se proporciona una URL de video, analízala. Si se proporciona un archivo de audio, analízalo. Si la URL es una fuente web conocida como YouTube o TikTok, concéntrate ÚNICAMENTE en extraer la transcripción del audio y NO la descripción o el texto de la página.";
-            let statusMessage: string;
+            let parts: Part[] = [];
+            let transcriptionSource: string = "";
 
             if (videoUrl) {
-                statusMessage = `Analizando y transcribiendo URL: ${videoUrl}...`;
-                // Para URLs, el "Part" es solo la URL
-                audioPart = {
-                    inlineData: {
-                        data: videoUrl,
-                        mimeType: 'text/uri-list', // MimeType para URLs externas
-                    }
-                };
+                // Lógica CRUCIAL: Se envía la URL como texto para que el modelo la analice y extraiga el audio/información.
+                // NO se debe enviar como Base64.
+                transcriptionSource = videoUrl;
+                parts.push({
+                    text: `Analiza el audio del video en esta URL: ${videoUrl}. Ignora cualquier texto o metadato de búsqueda. Transcribe ÚNICAMENTE el contenido hablado del video.`
+                });
+
             } else if (file) {
-                statusMessage = `Transcribiendo ${file.name}...`;
+                // Lógica de subida de archivo Base64
+                transcriptionSource = file.name;
                 const base64Audio = await fileToBase64(file);
-                // Para archivos, el "Part" es el Base64
-                audioPart = {
+                const audioPart: Part = {
                     inlineData: {
                         data: base64Audio,
                         mimeType: file.type,
-                    }
+                    },
                 };
-            } else {
-                return; // No debería suceder por la verificación inicial
+                parts.push(audioPart);
+                parts.push({ text: "Transcribe este audio recording." });
             }
 
-            setStatus(statusMessage);
-            
             const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
             
             const result = await model.generateContent({
-                contents: [{ role: "user", parts: [audioPart!, {text: initialPrompt}] }],
-                safetySettings: safetySettings // Se añade aquí
+                contents: [{ role: "user", parts: parts }],
+                safetySettings: safetySettings
             });
 
             const response = result.response;
             
             setTranscription(response.text() ?? "");
-            setStatus('Transcripción completa. Ahora puedes generar contenido alternativo.');
+            setStatus(`Transcripción de ${transcriptionSource} completa. Ahora puedes generar contenido alternativo.`);
         } catch (error) {
             console.error('Transcription error:', error);
             const errorMessage = error instanceof Error ? error.message : String(error);
-            setStatus(`Error en la transcripción: ${errorMessage}`);
+            setStatus(`Error en la transcripción: ${errorMessage}. (Si usas un link, el problema es que la web no puede acceder al audio del video).`);
         } finally {
             setIsLoading(false);
         }
     };
 
-    const handleGenerateRewrittenContent = async () => { // Antes handleGenerateBusinessSummary
+    const handleGenerateRewrittenContent = async () => {
         if (!transcription) {
-            setStatus('No hay transcripción para generar contenido alternativo.');
+            setStatus('No hay transcripción para reescribir.');
             return;
         }
 
         setIsLoading(true);
-        setStatus('Generando contenido alternativo...');
+        setStatus('Generando otra manera de decirlo...');
         setRewrittenContent('');
 
         try {
             const ai = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
             const permanentInstructionsText = globalInstructions.length > 0
-                ? `Para esta reescritura, aplica estas reglas e instrucciones permanentes en todo momento: ${globalInstructions.join('. ')}`
+                ? `Para este contenido, aplica estas reglas e instrucciones permanentes en todo momento: ${globalInstructions.join('. ')}`
                 : '';
 
-            const prompt = `Como creador de contenido para redes sociales, necesito que reescribas la siguiente transcripción. El objetivo es cambiar la manera de decir el contenido original, mantener el mensaje principal, pero hacerlo más atractivo, viral o adecuado para la plataforma que tú consideres.
+            const prompt = `Basado en la siguiente transcripción, genera una versión nueva, creativa y atractiva. Tu objetivo es reescribir el texto con palabras diferentes, cambiando el tono y el estilo para hacerlo ideal para redes sociales.
             
             ${permanentInstructionsText}
 
@@ -179,22 +196,21 @@ const App: React.FC = () => {
             ${transcription}
             ---
             
-            Genera solo el contenido reescrito.
-            `;
+            Genera solo la nueva versión reescrita.`;
 
             const model = ai.getGenerativeModel({ model: 'gemini-2.5-pro' });
 
             const result = await model.generateContent({
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
-                safetySettings: safetySettings // Se añade aquí
-            });
+                safetySettings: safetySettings
+            }); 
             const response = result.response;
 
             setRewrittenContent(response.text() ?? "");
             setStatus('Contenido alternativo generado. Puedes mejorarlo a continuación.');
         } catch (error) {
-            console.error('Rewritten content generation error:', error);
-            setStatus(`Error generando el contenido alternativo: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            console.error('Content generation error:', error);
+            setStatus(`Error generando contenido alternativo: ${error instanceof Error ? error.message : 'Unknown error'}`);
         } finally {
             setIsLoading(false);
         }
@@ -220,7 +236,7 @@ const App: React.FC = () => {
                 ? `Adicionalmente, aplica estas reglas e instrucciones permanentes en todo momento: ${globalInstructions.join('. ')}`
                 : '';
 
-            const promptParts: any[] = [{ text: `
+            const promptParts: Part[] = [{ text: `
                 Necesito que mejores el siguiente "Contenido Alternativo Actual" basándote en la "Transcripción Original" y la "Instrucción de Mejora" que te proporciono. 
                 
                 ${permanentInstructionsText}
@@ -270,7 +286,7 @@ const App: React.FC = () => {
             audioInstructionBlobRef.current = null;
         } catch (error) {
             console.error('Improvement error:', error);
-            setStatus(`Error mejorando el resumen: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            setStatus(`Error mejorando el contenido alternativo: ${error instanceof Error ? error.message : 'Unknown error'}`);
         } finally {
             setIsLoading(false);
         }
@@ -303,33 +319,29 @@ const App: React.FC = () => {
     };
 
     const handleGenerateDocument = () => {
-        if (!file && !videoUrl) {
+        if (!transcription || !rewrittenContent) {
             setStatus("Faltan datos para generar el documento.");
             return;
         }
-        if (!transcription || !rewrittenContent) {
-            setStatus("Faltan la transcripción o el contenido alternativo.");
-            return;
-        }
-    
-        const sourceName = videoUrl ? videoUrl : (file?.name || 'Archivo Desconocido');
+        
+        const sourceName = file ? file.name : (videoUrl || "URL de Video/Audio");
 
         const docContent = `
 =========================================
 REGISTRO DE CONTENIDO
 =========================================
 
-Fuente: ${sourceName}
+Fuente Original: ${sourceName}
 Fecha de Procesamiento: ${new Date().toLocaleString()}
 
 -----------------------------------------
-1. TRANSCRIPCIÓN ORIGINAL DEL AUDIO/VIDEO
+1. TRANSCRIPCIÓN BASE
 -----------------------------------------
 
 ${transcription}
 
 -----------------------------------------
-2. CONTENIDO ALTERNATIVO (OTRA MANERA DE DECIRLO)
+2. OTRA MANERA DE DECIRLO (Contenido Alternativo)
 -----------------------------------------
 
 ${rewrittenContent}
@@ -339,7 +351,7 @@ ${rewrittenContent}
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        const baseFilename = sourceName.substring(0, 50).replace(/[^a-z0-9]/gi, '_');
+        const baseFilename = sourceName.split('.').slice(0, -1).join('.') || sourceName;
         link.download = `Contenido_${baseFilename}.txt`;
         document.body.appendChild(link);
         link.click();
@@ -350,8 +362,7 @@ ${rewrittenContent}
 
     const handleExportInstructions = () => {
         if (globalInstructions.length === 0) {
-            // Nota: Se elimina alert()
-            setStatus("No hay mejoras permanentes para exportar.");
+            alert("No hay mejoras permanentes para exportar.");
             return;
         }
         const content = globalInstructions.join('\n');
@@ -364,7 +375,6 @@ ${rewrittenContent}
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
-        setStatus("Instrucciones exportadas.");
     };
 
     const handleImportInstructions = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -376,8 +386,7 @@ ${rewrittenContent}
             const text = e.target?.result as string;
             const lines = text.split('\n').filter(line => line.trim() !== '');
             saveGlobalInstructions(lines);
-            // Nota: Se elimina alert()
-            setStatus(`${lines.length} instrucciones importadas correctamente.`);
+            alert(`${lines.length} mejoras importadas correctamente.`);
         };
         reader.readAsText(file);
         event.target.value = ''; // Reset input
@@ -405,34 +414,25 @@ ${rewrittenContent}
         <div style={styles.container}>
             <div style={{maxWidth: '800px', margin: '0 auto'}}>
                 <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
-                    <h1 style={{...styles.header, marginBottom: 0, textAlign: 'left'}}>Transcriptor y Reescritor de Contenido</h1>
+                    <h1 style={{...styles.header, marginBottom: 0, textAlign: 'left'}}>Transcriptor para Creadores</h1>
                     <button style={styles.button} onClick={() => setIsModalOpen(true)}>Instrucciones Permanentes</button>
                 </div>
 
                 <div style={styles.card}>
                     <h2>1. Fuente de Audio/Video</h2>
-                    <p>Pega el link de Video (TikTok, YouTube, Instagram) — O — Sube tu archivo de audio (MP3, M4A, etc.)</p>
+                    <p>Pega el link de Video (TikTok, YouTube, Instagram) o sube un archivo.</p>
                     <input 
-                        type="text" 
-                        placeholder="Pega la URL del video aquí..."
+                        type="url" 
+                        placeholder="Pega aquí la URL del video..."
                         value={videoUrl}
                         onChange={handleUrlChange}
-                        disabled={!!file}
-                        style={{...styles.textarea, minHeight: 'auto', marginBottom: '0.5rem'}}
+                        style={{...styles.modalInput, marginBottom: '1rem', width: '100%'}}
                     />
-                    <input 
-                        type="file" 
-                        accept="audio/*" 
-                        onChange={handleFileChange} 
-                        disabled={!!videoUrl}
-                        style={{marginTop: '1rem'}} 
-                    />
-                    <button 
-                        onClick={handleTranscribe} 
-                        disabled={(!file && !videoUrl) || isLoading} 
-                        style={{...styles.button, ...( (!file && !videoUrl) || isLoading ? styles.buttonDisabled : {}), display: 'block' }}
-                    >
-                        {isLoading && status.startsWith('Analizando') ? 'Analizando...' : 'Transcribir y Extraer Contenido'}
+                    <p style={{textAlign: 'center', margin: '1rem 0', fontWeight: 'bold', color: '#606770'}}>— O —</p>
+                    <input type="file" accept="audio/*" onChange={handleFileChange} style={{marginTop: '0.5rem'}} />
+                    
+                    <button onClick={handleTranscribe} disabled={(!file && !videoUrl) || isLoading} style={{...styles.button, ...( (!file && !videoUrl) || isLoading ? styles.buttonDisabled : {}), display: 'block', marginTop: '1.5rem' }}>
+                        {isLoading ? 'Procesando...' : 'Transcribir y Extraer Contenido'}
                     </button>
                 </div>
                 
@@ -441,23 +441,21 @@ ${rewrittenContent}
                 {transcription && (
                     <div style={styles.card}>
                         <h2>2. Transcripción Base</h2>
-                        {(file || videoUrl) && <p style={styles.filenameDisplay}>Fuente: {videoUrl || file?.name}</p>}
-
+                        {file && <p style={styles.filenameDisplay}>Archivo: {file.name}</p>}
+                        {videoUrl && <p style={styles.filenameDisplay}>URL: {videoUrl}</p>}
+                        
                         {audioPreviewUrl && (
-                            <div style={{marginBottom: '1rem', padding: '10px', border: '1px solid #dddfe2', borderRadius: '6px', backgroundColor: '#f9f9f9'}}>
-                                <p style={{fontWeight: 'bold', marginBottom: '0.5rem'}}>Previsualización de Audio Subido:</p>
-                                <audio controls src={audioPreviewUrl} style={{width: '100%'}}/>
+                            <div style={{marginBottom: '1rem'}}>
+                                <p style={{fontWeight: 'bold', color: '#1c1e21'}}>Previsualización de Audio:</p>
+                                <audio controls src={audioPreviewUrl} style={{width: '100%'}} />
                             </div>
                         )}
 
                         <textarea style={styles.textarea} value={transcription} readOnly />
+                        
                         {!rewrittenContent && (
-                            <button 
-                                onClick={handleGenerateRewrittenContent} 
-                                disabled={isLoading} 
-                                style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}
-                            >
-                                {isLoading && status.startsWith('Generando contenido alternativo') ? 'Generando...' : 'Generar Otra Manera de Decirlo'}
+                            <button onClick={handleGenerateRewrittenContent} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}>
+                                {isLoading ? 'Generando...' : 'Generar Otra Manera de Decirlo'}
                             </button>
                         )}
                     </div>
@@ -466,6 +464,8 @@ ${rewrittenContent}
                 {rewrittenContent && (
                     <div style={styles.card}>
                         <h2>3. Otra Manera de Decirlo</h2>
+                        {file && <p style={styles.filenameDisplay}>Archivo: {file.name}</p>}
+                        {videoUrl && <p style={styles.filenameDisplay}>URL: {videoUrl}</p>}
                         <textarea 
                             style={styles.textarea} 
                             value={rewrittenContent}
@@ -476,7 +476,7 @@ ${rewrittenContent}
                             <p>Proporciona una instrucción para refinar el contenido anterior.</p>
                             <textarea
                                 style={{...styles.textarea, minHeight: '80px'}}
-                                placeholder="Ej: 'Añádele un tono más formal' o 'Hazlo más corto para un tweet'"
+                                placeholder="Ej: 'El tono debe ser más humorístico' o 'Incluye un llamado a la acción al final'"
                                 value={improvementInstruction}
                                 onChange={(e) => setImprovementInstruction(e.target.value)}
                             />
@@ -487,8 +487,8 @@ ${rewrittenContent}
                                 <button onClick={() => handleImproveSummary(false)} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}>
                                     Aplicar Mejora Temporal
                                 </button>
-                                <button onClick={() => handleImproveSummary(true)} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {}), marginLeft: '1rem', backgroundColor: '#36a420'}}>
-                                    Aplicar y Guardar como Regla
+                                <button onClick={() => handleImproveSummary(true)} disabled={isLoading || !improvementInstruction} style={{...styles.button, ...(isLoading || !improvementInstruction ? styles.buttonDisabled : {}), marginLeft: '1rem', backgroundColor: '#36a420'}}>
+                                    Aplicar y Guardar Mejora
                                 </button>
                             </div>
                         </div>
@@ -505,7 +505,7 @@ ${rewrittenContent}
                     </div>
                 )}
 
-                  {isModalOpen && (
+                 {isModalOpen && (
                     <div style={styles.modalOverlay} onClick={() => setIsModalOpen(false)}>
                         <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
                             <h2>Instrucciones Permanentes</h2>
@@ -534,13 +534,12 @@ ${rewrittenContent}
                                     onChange={(e) => setNewInstruction(e.target.value)}
                                     placeholder="Añadir nueva instrucción permanente"
                                     style={styles.modalInput}
-                                    onKeyPress={(e) => { 
-                                        if (e.key === 'Enter') {
-                                            if (newInstruction && !globalInstructions.includes(newInstruction)) {
-                                                saveGlobalInstructions([...globalInstructions, newInstruction]);
-                                                setNewInstruction('');
-                                            }
-                                        }}}
+                                    onKeyPress={(e) => { if (e.key === 'Enter') {
+                                        if (newInstruction && !globalInstructions.includes(newInstruction)) {
+                                            saveGlobalInstructions([...globalInstructions, newInstruction]);
+                                            setNewInstruction('');
+                                        }
+                                    }}}
                                 />
                                 <button 
                                     onClick={() => {
