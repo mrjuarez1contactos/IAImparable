@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-// Importa los 'Enums' de tipos correctos
 import { 
     GoogleGenerativeAI, 
     HarmCategory, 
@@ -41,20 +40,20 @@ const safetySettings = [
 
 const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
-    const [videoUrl, setVideoUrl] = useState<string>(''); // Nuevo estado para la URL del video
+    const [videoUrl, setVideoUrl] = useState<string>(''); // Nuevo estado para la URL
     const [transcription, setTranscription] = useState<string>('');
     const [rewrittenContent, setRewrittenContent] = useState<string>(''); // Renombrado de businessSummary
-    const [status, setStatus] = useState<string>('Por favor, selecciona un archivo de audio, pega un link de video o presiona "Grabar".');
+    const [status, setStatus] = useState<string>('Por favor, ingresa un link de video o selecciona un archivo de audio y presiona "Transcribir".');
     const [isLoading, setIsLoading] = useState<boolean>(false);
 
-    // Estado para mejoras de contenido
+    // State for summary improvements
     const [improvementInstruction, setImprovementInstruction] = useState('');
     const [isRecording, setIsRecording] = useState(false);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const audioInstructionBlobRef = useRef<Blob | null>(null);
-    
-    // Estado para instrucciones permanentes
+
+    // State for permanent instructions
     const [globalInstructions, setGlobalInstructions] = useState<string[]>([]);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [newInstruction, setNewInstruction] = useState('');
@@ -81,7 +80,7 @@ const App: React.FC = () => {
         const selectedFile = event.target.files?.[0];
         if (selectedFile) {
             setFile(selectedFile);
-            setVideoUrl(''); // Limpiar URL si se sube archivo
+            setVideoUrl(''); // Limpiar URL si sube archivo
             setTranscription('');
             setRewrittenContent('');
             setStatus(`Archivo seleccionado: ${selectedFile.name}`);
@@ -89,96 +88,69 @@ const App: React.FC = () => {
     };
     
     const handleUrlChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-        setVideoUrl(event.target.value);
-        if (event.target.value) {
-            setFile(null); // Limpiar archivo si se pega URL
+        const url = event.target.value;
+        setVideoUrl(url);
+        if (url) {
+            setFile(null); // Limpiar archivo si ingresa URL
+            setTranscription('');
+            setRewrittenContent('');
+            setStatus(`URL ingresada: ${url}`);
         }
     };
-
-    // Función para determinar si el input es un archivo local o una URL
-    const getInputSource = (): 'file' | 'url' | 'none' => {
-        if (file) return 'file';
-        if (videoUrl.trim()) return 'url';
-        return 'none';
-    };
-
-    // Función que simula la obtención del audio del video (LÓGICA PENDIENTE)
-    const fetchAudioFromUrl = async (url: string): Promise<{ audioBlob: Blob | null, fileName: string }> => {
-        setStatus(`[PENDIENTE] Intentando obtener audio del link: ${url}`);
-        
-        // **IMPORTANTE: Aquí se requiere una implementación de backend (Cloud Function, Node.js, etc.)**
-        // Los navegadores no pueden descargar el audio de TikTok/YouTube directamente por razones de seguridad (CORS) y derechos de autor.
-        // Simularemos el éxito por ahora.
-        
-        // === SIMULACIÓN DE ÉXITO ===
-        if (url.includes('tiktok') || url.includes('youtube') || url.includes('instagram')) {
-             setStatus(`[SIMULACIÓN] En una aplicación real, el backend está descargando el audio de ${url}...`);
-             // Simular una espera y un Blob de audio vacío para que el flujo siga
-             await new Promise(resolve => setTimeout(resolve, 3000));
-             return { audioBlob: new Blob(["simulated audio"], { type: 'audio/mp3' }), fileName: `audio-de-${url.substring(url.lastIndexOf('/') + 1)}.mp3` };
-        }
-        // === FIN SIMULACIÓN ===
-
-        return { audioBlob: null, fileName: 'url-invalida.txt' };
-    }
-
 
     const handleTranscribe = async () => {
-        const inputSource = getInputSource();
-        let sourceFile: File | Blob | null = file;
-        let sourceFileName = file?.name || "Audio de URL";
-        
-        if (inputSource === 'none') {
-            setStatus('Por favor, selecciona un archivo o pega un link.');
+        if (!file && !videoUrl) {
+            setStatus('Por favor, ingresa una URL de video o selecciona un archivo de audio.');
             return;
         }
+        
+        // Determinar la fuente de la transcripción para el status
+        const sourceName = file ? file.name : (videoUrl.length > 30 ? videoUrl.substring(0, 30) + '...' : videoUrl);
 
         setIsLoading(true);
+        setStatus(`Transcribiendo ${sourceName}...`);
         setTranscription('');
         setRewrittenContent('');
 
         try {
-            if (inputSource === 'url') {
-                setStatus(`Iniciando obtención de audio del link...`);
-                const { audioBlob, fileName } = await fetchAudioFromUrl(videoUrl.trim());
-
-                if (!audioBlob) {
-                    throw new Error("No se pudo obtener el audio de la URL o URL no soportada.");
-                }
-                sourceFile = audioBlob;
-                sourceFileName = fileName;
-                setStatus(`Audio de URL obtenido: ${sourceFileName}. Iniciando transcripción...`);
-            } else {
-                 setStatus(`Transcribiendo ${file?.name}...`);
-            }
-            
-            if (!sourceFile) return;
-
-            // Arreglo definitivo: Usar la API Key de Vite
             const ai = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
-            const base64Audio = await fileToBase64(sourceFile);
-            const audioPart = {
-                inlineData: {
-                    data: base64Audio,
-                    mimeType: sourceFile.type,
-                },
-            };
+            const promptParts: { text: string }[] = [];
+            const audioParts: { inlineData: { data: string, mimeType: string } }[] = [];
             
-            const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' }); 
+            let model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' });
             
-            const result = await model.generateContent({
-                contents: [{ role: "user", parts: [audioPart, {text: "Transcribe este audio en español, omitiendo muletillas o ruidos de fondo, para obtener un texto limpio y listo para ser usado como base para contenido."}] }],
-                safetySettings: safetySettings // Forzamos a que no se bloquee el audio por contenido
-            });
+            if (videoUrl) {
+                // Lógica para transcripción por URL
+                promptParts.push({ text: `Transcribe el audio de este video. Solo proporciona el texto de la transcripción, sin comentarios adicionales. URL: ${videoUrl}` });
+            } else if (file) {
+                // Lógica para transcripción por archivo subido (Base64)
+                const base64Audio = await fileToBase64(file);
+                audioParts.push({
+                    inlineData: {
+                        data: base64Audio,
+                        mimeType: file.type,
+                    },
+                });
+                promptParts.push({text: "Transcribe este audio. Solo proporciona el texto de la transcripción, sin comentarios adicionales."});
+            }
 
+            const contentParts = [
+                ...audioParts,
+                ...promptParts
+            ];
+
+            const result = await model.generateContent({
+                contents: [{ role: "user", parts: contentParts }],
+                safetySettings: safetySettings 
+            });
             const response = result.response;
             
             setTranscription(response.text() ?? "");
-            setStatus(`Transcripción de ${sourceFileName} completa. Ahora puedes generar contenido alternativo.`);
+            setStatus('Transcripción completa. Ahora puedes generar contenido alternativo.');
         } catch (error) {
             console.error('Transcription error:', error);
             const errorMessage = error instanceof Error ? error.message : String(error);
-            setStatus(`Error en la transcripción: ${errorMessage}. (Recuerda que la obtención de audio por link está simulada)`);
+            setStatus(`Error en la transcripción: ${errorMessage}`);
         } finally {
             setIsLoading(false);
         }
@@ -186,7 +158,7 @@ const App: React.FC = () => {
 
     const handleGenerateRewrittenContent = async () => {
         if (!transcription) {
-            setStatus('No hay transcripción para generar contenido.');
+            setStatus('No hay transcripción para reescribir.');
             return;
         }
 
@@ -200,7 +172,7 @@ const App: React.FC = () => {
                 ? `Para esta reescritura, aplica estas reglas e instrucciones permanentes en todo momento: ${globalInstructions.join('. ')}`
                 : '';
 
-            const prompt = `Eres un creador de contenido viral. Basado en la siguiente "Transcripción Original", reescribe el texto de una manera creativa, con un tono más de redes sociales (más dinámico, con hashtags, emojis y lenguaje casual) y apto para ser publicado como contenido nuevo.
+            const prompt = `Basado en la siguiente Transcripción Original, genera una nueva versión del texto que sea clara y concisa. Debes reescribir el contenido, diciéndolo con otras palabras, centrándote en un tono y estilo apropiado para redes sociales y la marca de un creador de contenido. 
             
             ${permanentInstructionsText}
 
@@ -208,12 +180,11 @@ const App: React.FC = () => {
             ---
             ${transcription}
             ---
-
-            Por favor, genera el nuevo contenido alternativo.
-            `;
+            
+            Genera la "Otra Manera de Decirlo" (el nuevo contenido reescrito):`;
 
             const model = ai.getGenerativeModel({ model: 'gemini-2.5-pro' });
-
+            
             const result = await model.generateContent({
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
                 safetySettings: safetySettings 
@@ -230,7 +201,7 @@ const App: React.FC = () => {
         }
     };
 
-    const handleImproveSummary = async (isPermanent: boolean) => {
+    const handleImproveContent = async (isPermanent: boolean) => {
         if (!rewrittenContent) {
             setStatus('Primero debes generar el contenido alternativo para poder mejorarlo.');
             return;
@@ -284,7 +255,7 @@ const App: React.FC = () => {
             
             const result = await model.generateContent({
                 contents: [{ role: "user", parts: promptParts }],
-                safetySettings: safetySettings
+                safetySettings: safetySettings 
             });
             const response = result.response;
             
@@ -333,27 +304,33 @@ const App: React.FC = () => {
     };
 
     const handleGenerateDocument = () => {
-        if (!file && !videoUrl && !transcription) {
+        if (!file && !videoUrl || !transcription || !rewrittenContent) {
             setStatus("Faltan datos para generar el documento.");
             return;
         }
+
+        const sourceName = file 
+            ? file.name 
+            : videoUrl 
+            ? videoUrl 
+            : 'Fuente Desconocida';
     
         const docContent = `
 =========================================
-REGISTRO DE CONTENIDO
+REGISTRO DE CONTENIDO REESCRITO
 =========================================
 
-Fuente Original: ${file?.name || videoUrl || 'Grabación de Voz'}
+Fuente Original: ${sourceName}
 Fecha de Procesamiento: ${new Date().toLocaleString()}
 
 -----------------------------------------
-1. TRANSCRIPCIÓN BASE
+1. TRANSCRIPCIÓN COMPLETA
 -----------------------------------------
 
 ${transcription}
 
 -----------------------------------------
-2. OTRA MANERA DE DECIRLO (Contenido para Redes)
+2. OTRA MANERA DE DECIRLO (Contenido Reescrito)
 -----------------------------------------
 
 ${rewrittenContent}
@@ -363,8 +340,8 @@ ${rewrittenContent}
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        const baseFilename = file?.name?.split('.').slice(0, -1).join('.') || videoUrl.replace(/[^a-z0-9]/gi, '_').substring(0, 30) || 'Contenido-Alternativo';
-        link.download = `${baseFilename}.txt`;
+        const baseFilename = sourceName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        link.download = `contenido-reescrito-${baseFilename.substring(0, 20)}.txt`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -411,7 +388,6 @@ ${rewrittenContent}
         card: { backgroundColor: 'white', padding: '2rem', borderRadius: '8px', boxShadow: '0 4px 8px rgba(0,0,0,0.1)', marginBottom: '1.5rem' },
         button: { backgroundColor: '#1877f2', color: 'white', border: 'none', padding: '12px 20px', borderRadius: '6px', fontSize: '16px', cursor: 'pointer', margin: '0.5rem 0', display: 'inline-block', transition: 'background-color 0.3s' },
         buttonDisabled: { backgroundColor: '#a0bdf5', cursor: 'not-allowed' },
-        inputField: { width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #dddfe2', fontSize: '14px', boxSizing: 'border-box', marginTop: '0.5rem', marginBottom: '1rem' },
         textarea: { width: '100%', minHeight: '150px', padding: '10px', borderRadius: '6px', border: '1px solid #dddfe2', fontSize: '14px', boxSizing: 'border-box', marginTop: '1rem' },
         status: { textAlign: 'center', margin: '1.5rem 0', color: isLoading ? '#1877f2' : '#606770', fontWeight: 'bold' },
         modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 },
@@ -433,33 +409,27 @@ ${rewrittenContent}
 
                 <div style={styles.card}>
                     <h2>1. Fuente de Audio/Video</h2>
-                    
-                    {/* Campo para URL */}
-                    <label htmlFor="video-url" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>Pega el link de Video (TikTok, YouTube, Instagram)</label>
+                    <p style={{fontSize: '0.9rem', color: '#606770', marginBottom: '1rem'}}>Ingresa un link o sube un archivo (no ambos).</p>
+
+                    <label style={{fontWeight: 'bold', display: 'block', marginBottom: '0.5rem'}}>Pega el link de Video (YouTube, TikTok, Instagram)</label>
                     <input 
                         type="url" 
-                        id="video-url"
+                        placeholder="Ej: https://www.youtube.com/watch?v=..." 
                         value={videoUrl}
-                        onChange={handleUrlChange} 
-                        placeholder="Ej: https://www.youtube.com/watch?v=..."
-                        style={styles.inputField} 
-                        disabled={!!file}
+                        onChange={handleUrlChange}
+                        style={{width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #dddfe2', marginBottom: '1rem'}}
                     />
 
-                    <div style={{textAlign: 'center', margin: '1rem 0', color: '#606770'}}>— O —</div>
+                    <p style={{textAlign: 'center', fontWeight: 'bold', color: '#606770'}}>— O —</p>
+
+                    <label style={{fontWeight: 'bold', display: 'block', marginBottom: '0.5rem'}}>Sube tu archivo de audio (MP3, M4A, etc.)</label>
+                    <input type="file" accept="audio/*" onChange={handleFileChange} style={{marginTop: '0.5rem'}} />
                     
-                    {/* Campo para subir archivo */}
-                    <label htmlFor="audio-file" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>Sube tu archivo de audio (MP3, M4A, etc.)</label>
-                    <input 
-                        type="file" 
-                        id="audio-file"
-                        accept="audio/*" 
-                        onChange={handleFileChange} 
-                        style={{marginTop: '0.5rem'}} 
-                        disabled={!!videoUrl.trim()}
-                    />
-                    
-                    <button onClick={handleTranscribe} disabled={isLoading || getInputSource() === 'none'} style={{...styles.button, ...( isLoading || getInputSource() === 'none' ? styles.buttonDisabled : {}), display: 'block', marginTop: '1.5rem' }}>
+                    <button 
+                        onClick={handleTranscribe} 
+                        disabled={isLoading || (!file && !videoUrl)} 
+                        style={{...styles.button, ...( isLoading || (!file && !videoUrl) ? styles.buttonDisabled : {}), display: 'block', width: '100%', marginTop: '1.5rem' }}
+                    >
                         {isLoading && status.startsWith('Transcribiendo') ? 'Transcribiendo...' : 'Transcribir y Extraer Contenido'}
                     </button>
                 </div>
@@ -473,16 +443,16 @@ ${rewrittenContent}
                         {videoUrl && <p style={styles.filenameDisplay}>URL: {videoUrl}</p>}
                         <textarea style={styles.textarea} value={transcription} readOnly />
                         {!rewrittenContent && (
-                            <button onClick={handleGenerateRewrittenContent} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}>
-                                {isLoading && status.startsWith('Generando contenido') ? 'Generando...' : 'Generar Otra Manera de Decirlo'}
-                            </button>
+                             <button onClick={handleGenerateRewrittenContent} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {}), width: '100%'}}>
+                                 {isLoading && status.startsWith('Generando contenido') ? 'Generando Contenido...' : 'Generar Otra Manera de Decirlo'}
+                             </button>
                         )}
                     </div>
                 )}
 
                 {rewrittenContent && (
                     <div style={styles.card}>
-                        <h2>3. Otra Manera de Decirlo</h2>
+                        <h2>3. Otra Manera de Decirlo (Contenido Alternativo)</h2>
                         <textarea 
                             style={styles.textarea} 
                             value={rewrittenContent}
@@ -493,7 +463,7 @@ ${rewrittenContent}
                             <p>Proporciona una instrucción para refinar el contenido anterior.</p>
                             <textarea
                                 style={{...styles.textarea, minHeight: '80px'}}
-                                placeholder="Ej: 'Añade un llamado a la acción al final para que me sigan en TikTok' o 'Cambia el tono a uno más serio y profesional'"
+                                placeholder="Ej: 'Añade 3 emojis al inicio' o 'Haz el tono más juvenil y emocionado'"
                                 value={improvementInstruction}
                                 onChange={(e) => setImprovementInstruction(e.target.value)}
                             />
@@ -501,18 +471,18 @@ ${rewrittenContent}
                                 {isRecording ? 'Detener Grabación' : 'Grabar Instrucciones'}
                             </button>
                             <div style={{marginTop: '1rem'}}>
-                                <button onClick={() => handleImproveSummary(false)} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}>
+                                <button onClick={() => handleImproveContent(false)} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}>
                                     Aplicar Mejora Temporal
                                 </button>
-                                <button onClick={() => handleImproveSummary(true)} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {}), marginLeft: '1rem', backgroundColor: '#36a420'}}>
-                                    Aplicar y Guardar Mejora
+                                <button onClick={() => handleImproveContent(true)} disabled={isLoading || !improvementInstruction} style={{...styles.button, ...(isLoading || !improvementInstruction ? styles.buttonDisabled : {}), marginLeft: '1rem', backgroundColor: '#36a420'}}>
+                                    Aplicar y Guardar Instrucción
                                 </button>
                             </div>
                         </div>
                     </div>
                 )}
 
-                {(transcription || rewrittenContent) && (
+                {rewrittenContent && (
                     <div style={styles.card}>
                         <h2>4. Exportar</h2>
                         <p>Genera un archivo .txt con la transcripción y el contenido alternativo.</p>
@@ -526,7 +496,7 @@ ${rewrittenContent}
                         <div style={styles.modalOverlay} onClick={() => setIsModalOpen(false)}>
                             <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
                                 <h2>Instrucciones Permanentes</h2>
-                                <p>Estas reglas se aplicarán a TODO el contenido alternativo futuro.</p>
+                                <p>Estas instrucciones se aplicarán a TODO el contenido alternativo futuro.</p>
                                 
                                 <div style={{ display: 'flex', gap: '1rem', margin: '1rem 0', borderBottom: '1px solid #eee', paddingBottom: '1rem' }}>
                                     <input
