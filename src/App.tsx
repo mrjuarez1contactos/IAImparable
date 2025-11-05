@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-// === ARREGLO DE TIPOS DE SEGURIDAD ===
 // Importa los 'Enums' de tipos correctos
 import { 
     GoogleGenerativeAI, 
     HarmCategory, 
     HarmBlockThreshold 
-} from "@google/generative-ai"; // <-- CORREGIDO: De @google-generative-ai a @google/generative-ai
+} from "@google/generative-ai";
 
 // Helper function to convert a file to a base64 string
 const fileToBase64 = (file: File | Blob): Promise<string> => {
@@ -13,8 +12,6 @@ const fileToBase64 = (file: File | Blob): Promise<string> => {
         const reader = new FileReader();
         reader.readAsDataURL(file);
         reader.onload = () => {
-            // result is a data URL like "data:audio/mp3;base64,..."
-            // We only want the base64 part
             const result = reader.result as string;
             resolve(result.split(',')[1]);
         };
@@ -22,7 +19,6 @@ const fileToBase64 = (file: File | Blob): Promise<string> => {
     });
 };
 
-// === ARREGLO DE TIPOS DE SEGURIDAD ===
 // Define la configuración de seguridad usando los Enums importados
 const safetySettings = [
     {
@@ -45,21 +41,20 @@ const safetySettings = [
 
 const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
+    const [videoUrl, setVideoUrl] = useState<string>(''); // Nuevo estado para la URL del video
     const [transcription, setTranscription] = useState<string>('');
-    // --- PASO 1: Eliminado ---
-    // const [generalSummary, setGeneralSummary] = useState<string>(''); 
-    const [businessSummary, setBusinessSummary] = useState<string>('');
-    const [status, setStatus] = useState<string>('Por favor, selecciona un archivo de audio y presiona "Transcribir".');
+    const [rewrittenContent, setRewrittenContent] = useState<string>(''); // Renombrado de businessSummary
+    const [status, setStatus] = useState<string>('Por favor, selecciona un archivo de audio, pega un link de video o presiona "Grabar".');
     const [isLoading, setIsLoading] = useState<boolean>(false);
 
-    // State for summary improvements
+    // Estado para mejoras de contenido
     const [improvementInstruction, setImprovementInstruction] = useState('');
     const [isRecording, setIsRecording] = useState(false);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const audioInstructionBlobRef = useRef<Blob | null>(null);
-
-    // State for permanent instructions
+    
+    // Estado para instrucciones permanentes
     const [globalInstructions, setGlobalInstructions] = useState<string[]>([]);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [newInstruction, setNewInstruction] = useState('');
@@ -86,105 +81,158 @@ const App: React.FC = () => {
         const selectedFile = event.target.files?.[0];
         if (selectedFile) {
             setFile(selectedFile);
+            setVideoUrl(''); // Limpiar URL si se sube archivo
             setTranscription('');
-            // --- PASO 1: Eliminado ---
-            // setGeneralSummary('');
-            setBusinessSummary('');
+            setRewrittenContent('');
             setStatus(`Archivo seleccionado: ${selectedFile.name}`);
         }
     };
+    
+    const handleUrlChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        setVideoUrl(event.target.value);
+        if (event.target.value) {
+            setFile(null); // Limpiar archivo si se pega URL
+        }
+    };
+
+    // Función para determinar si el input es un archivo local o una URL
+    const getInputSource = (): 'file' | 'url' | 'none' => {
+        if (file) return 'file';
+        if (videoUrl.trim()) return 'url';
+        return 'none';
+    };
+
+    // Función que simula la obtención del audio del video (LÓGICA PENDIENTE)
+    const fetchAudioFromUrl = async (url: string): Promise<{ audioBlob: Blob | null, fileName: string }> => {
+        setStatus(`[PENDIENTE] Intentando obtener audio del link: ${url}`);
+        
+        // **IMPORTANTE: Aquí se requiere una implementación de backend (Cloud Function, Node.js, etc.)**
+        // Los navegadores no pueden descargar el audio de TikTok/YouTube directamente por razones de seguridad (CORS) y derechos de autor.
+        // Simularemos el éxito por ahora.
+        
+        // === SIMULACIÓN DE ÉXITO ===
+        if (url.includes('tiktok') || url.includes('youtube') || url.includes('instagram')) {
+             setStatus(`[SIMULACIÓN] En una aplicación real, el backend está descargando el audio de ${url}...`);
+             // Simular una espera y un Blob de audio vacío para que el flujo siga
+             await new Promise(resolve => setTimeout(resolve, 3000));
+             return { audioBlob: new Blob(["simulated audio"], { type: 'audio/mp3' }), fileName: `audio-de-${url.substring(url.lastIndexOf('/') + 1)}.mp3` };
+        }
+        // === FIN SIMULACIÓN ===
+
+        return { audioBlob: null, fileName: 'url-invalida.txt' };
+    }
+
 
     const handleTranscribe = async () => {
-        if (!file) {
-            setStatus('Por favor, selecciona un archivo primero.');
+        const inputSource = getInputSource();
+        let sourceFile: File | Blob | null = file;
+        let sourceFileName = file?.name || "Audio de URL";
+        
+        if (inputSource === 'none') {
+            setStatus('Por favor, selecciona un archivo o pega un link.');
             return;
         }
 
         setIsLoading(true);
-        setStatus(`Transcribiendo ${file.name}...`);
         setTranscription('');
-        // --- PASO 1: Eliminado ---
-        // setGeneralSummary('');
-        setBusinessSummary('');
+        setRewrittenContent('');
 
         try {
-            const ai = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
+            if (inputSource === 'url') {
+                setStatus(`Iniciando obtención de audio del link...`);
+                const { audioBlob, fileName } = await fetchAudioFromUrl(videoUrl.trim());
+
+                if (!audioBlob) {
+                    throw new Error("No se pudo obtener el audio de la URL o URL no soportada.");
+                }
+                sourceFile = audioBlob;
+                sourceFileName = fileName;
+                setStatus(`Audio de URL obtenido: ${sourceFileName}. Iniciando transcripción...`);
+            } else {
+                 setStatus(`Transcribiendo ${file?.name}...`);
+            }
             
-            const base64Audio = await fileToBase64(file);
+            if (!sourceFile) return;
+
+            // Arreglo definitivo: Usar la API Key de Vite
+            const ai = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
+            const base64Audio = await fileToBase64(sourceFile);
             const audioPart = {
                 inlineData: {
                     data: base64Audio,
-                    mimeType: file.type,
+                    mimeType: sourceFile.type,
                 },
             };
             
-            // Se añade la configuración de seguridad (ya con los tipos correctos)
-            const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash', safetySettings });
+            const model = ai.getGenerativeModel({ model: 'gemini-2.5-flash' }); 
             
             const result = await model.generateContent({
-                contents: [{ role: "user", parts: [audioPart, {text: "Transcribe this audio recording."}] }],
+                contents: [{ role: "user", parts: [audioPart, {text: "Transcribe este audio en español, omitiendo muletillas o ruidos de fondo, para obtener un texto limpio y listo para ser usado como base para contenido."}] }],
+                safetySettings: safetySettings // Forzamos a que no se bloquee el audio por contenido
             });
 
             const response = result.response;
             
             setTranscription(response.text() ?? "");
-            // --- PASO 1: Modificado ---
-            setStatus('Transcripción completa. Ahora puedes generar el resumen de negocio.');
+            setStatus(`Transcripción de ${sourceFileName} completa. Ahora puedes generar contenido alternativo.`);
         } catch (error) {
             console.error('Transcription error:', error);
             const errorMessage = error instanceof Error ? error.message : String(error);
-            setStatus(`Error en la transcripción: ${errorMessage}`);
+            setStatus(`Error en la transcripción: ${errorMessage}. (Recuerda que la obtención de audio por link está simulada)`);
         } finally {
             setIsLoading(false);
         }
     };
 
-    // --- PASO 1: Eliminada toda la función handleGenerateGeneralSummary ---
-
-    const handleGenerateBusinessSummary = async () => {
+    const handleGenerateRewrittenContent = async () => {
         if (!transcription) {
-            setStatus('No hay transcripción para resumir.');
+            setStatus('No hay transcripción para generar contenido.');
             return;
         }
 
         setIsLoading(true);
-        setStatus('Generando resumen de negocio...');
-        setBusinessSummary('');
+        setStatus('Generando contenido alternativo...');
+        setRewrittenContent('');
 
         try {
             const ai = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
             const permanentInstructionsText = globalInstructions.length > 0
-                ? `Para este resumen, aplica estas reglas e instrucciones permanentes en todo momento: ${globalInstructions.join('. ')}`
+                ? `Para esta reescritura, aplica estas reglas e instrucciones permanentes en todo momento: ${globalInstructions.join('. ')}`
                 : '';
 
-            const prompt = `Basado en la siguiente transcripción de una llamada, genera un resumen de negocio claro y conciso. El resumen debe identificar los puntos clave y las acciones a seguir, enfocándose en temas relevantes para un negocio de mariscos.
+            const prompt = `Eres un creador de contenido viral. Basado en la siguiente "Transcripción Original", reescribe el texto de una manera creativa, con un tono más de redes sociales (más dinámico, con hashtags, emojis y lenguaje casual) y apto para ser publicado como contenido nuevo.
             
             ${permanentInstructionsText}
 
-            Transcripción:
+            Transcripción Original:
             ---
             ${transcription}
             ---
+
+            Por favor, genera el nuevo contenido alternativo.
             `;
 
-            // Se añade la configuración de seguridad (ya con los tipos correctos)
-            const model = ai.getGenerativeModel({ model: 'gemini-2.5-pro', safetySettings });
-            const result = await model.generateContent(prompt);
+            const model = ai.getGenerativeModel({ model: 'gemini-2.5-pro' });
+
+            const result = await model.generateContent({
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                safetySettings: safetySettings 
+            }); 
             const response = result.response;
 
-            setBusinessSummary(response.text() ?? "");
-            setStatus('Resumen de negocio generado. Puedes mejorarlo a continuación.');
+            setRewrittenContent(response.text() ?? "");
+            setStatus('Contenido alternativo generado. Puedes mejorarlo a continuación.');
         } catch (error) {
-            console.error('Business summary generation error:', error);
-            setStatus(`Error generando el resumen de negocio: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            console.error('Content generation error:', error);
+            setStatus(`Error generando contenido alternativo: ${error instanceof Error ? error.message : 'Unknown error'}`);
         } finally {
             setIsLoading(false);
         }
     };
 
     const handleImproveSummary = async (isPermanent: boolean) => {
-        if (!businessSummary) {
-            setStatus('Primero debes generar un resumen de negocio para poder mejorarlo.');
+        if (!rewrittenContent) {
+            setStatus('Primero debes generar el contenido alternativo para poder mejorarlo.');
             return;
         }
         if (!improvementInstruction && !audioInstructionBlobRef.current) {
@@ -193,7 +241,7 @@ const App: React.FC = () => {
         }
 
         setIsLoading(true);
-        setStatus('Aplicando mejoras al resumen de negocio...');
+        setStatus('Aplicando mejoras al contenido alternativo...');
 
         try {
             const ai = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
@@ -203,7 +251,7 @@ const App: React.FC = () => {
                 : '';
 
             const promptParts: any[] = [{ text: `
-                Necesito que mejores el siguiente "Resumen de Negocio Actual" basándote en la "Transcripción Original" y la "Instrucción de Mejora" que te proporciono. 
+                Necesito que mejores el siguiente "Contenido Alternativo Actual" basándote en la "Transcripción Original" y la "Instrucción de Mejora" que te proporciono. 
                 
                 ${permanentInstructionsText}
 
@@ -214,12 +262,12 @@ const App: React.FC = () => {
                 ${transcription}
                 ---
 
-                Resumen de Negocio Actual:
+                Contenido Alternativo Actual:
                 ---
-                ${businessSummary}
+                ${rewrittenContent}
                 ---
 
-                Por favor, genera el "Nuevo Resumen de Negocio Mejorado":
+                Por favor, genera el "Nuevo Contenido Alternativo Mejorado":
             `}];
 
             if (audioInstructionBlobRef.current) {
@@ -232,16 +280,16 @@ const App: React.FC = () => {
                 });
             }
 
-            // Se añade la configuración de seguridad (ya con los tipos correctos)
-            const model = ai.getGenerativeModel({ model: 'gemini-2.5-pro', safetySettings });
+            const model = ai.getGenerativeModel({ model: 'gemini-2.5-pro' });
             
             const result = await model.generateContent({
                 contents: [{ role: "user", parts: promptParts }],
+                safetySettings: safetySettings
             });
             const response = result.response;
             
-            setBusinessSummary(response.text() ?? "");
-            setStatus('Resumen de negocio mejorado exitosamente.');
+            setRewrittenContent(response.text() ?? "");
+            setStatus('Contenido alternativo mejorado exitosamente.');
 
             if (isPermanent && improvementInstruction) {
                 if (!globalInstructions.includes(improvementInstruction)) {
@@ -252,7 +300,7 @@ const App: React.FC = () => {
             audioInstructionBlobRef.current = null;
         } catch (error) {
             console.error('Improvement error:', error);
-            setStatus(`Error mejorando el resumen: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            setStatus(`Error mejorando el contenido: ${error instanceof Error ? error.message : 'Unknown error'}`);
         } finally {
             setIsLoading(false);
         }
@@ -285,39 +333,37 @@ const App: React.FC = () => {
     };
 
     const handleGenerateDocument = () => {
-        // --- PASO 1: Modificado ---
-        if (!file || !transcription || !businessSummary) {
+        if (!file && !videoUrl && !transcription) {
             setStatus("Faltan datos para generar el documento.");
             return;
         }
     
         const docContent = `
 =========================================
-REGISTRO DE LLAMADA
+REGISTRO DE CONTENIDO
 =========================================
 
-Archivo Original: ${file.name}
+Fuente Original: ${file?.name || videoUrl || 'Grabación de Voz'}
 Fecha de Procesamiento: ${new Date().toLocaleString()}
 
 -----------------------------------------
-1. TRANSCRIPCIÓN COMPLETA
+1. TRANSCRIPCIÓN BASE
 -----------------------------------------
 
 ${transcription}
 
 -----------------------------------------
-2. RESUMEN DE NEGOCIO (PARA NOTAS RÁPIDAS)
+2. OTRA MANERA DE DECIRLO (Contenido para Redes)
 -----------------------------------------
 
-${businessSummary}
+${rewrittenContent}
         `;
-        // --- PASO 1: Eliminada la sección de Resumen General del .txt ---
     
         const blob = new Blob([docContent.trim()], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        const baseFilename = file.name.split('.').slice(0, -1).join('.') || file.name;
+        const baseFilename = file?.name?.split('.').slice(0, -1).join('.') || videoUrl.replace(/[^a-z0-9]/gi, '_').substring(0, 30) || 'Contenido-Alternativo';
         link.download = `${baseFilename}.txt`;
         document.body.appendChild(link);
         link.click();
@@ -336,7 +382,7 @@ ${businessSummary}
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = 'mejoras-permanentes.txt';
+        link.download = 'instrucciones-permanentes.txt';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -352,7 +398,7 @@ ${businessSummary}
             const text = e.target?.result as string;
             const lines = text.split('\n').filter(line => line.trim() !== '');
             saveGlobalInstructions(lines);
-            alert(`${lines.length} mejoras importadas correctamente.`);
+            alert(`${lines.length} instrucciones importadas correctamente.`);
         };
         reader.readAsText(file);
         event.target.value = ''; // Reset input
@@ -365,18 +411,15 @@ ${businessSummary}
         card: { backgroundColor: 'white', padding: '2rem', borderRadius: '8px', boxShadow: '0 4px 8px rgba(0,0,0,0.1)', marginBottom: '1.5rem' },
         button: { backgroundColor: '#1877f2', color: 'white', border: 'none', padding: '12px 20px', borderRadius: '6px', fontSize: '16px', cursor: 'pointer', margin: '0.5rem 0', display: 'inline-block', transition: 'background-color 0.3s' },
         buttonDisabled: { backgroundColor: '#a0bdf5', cursor: 'not-allowed' },
+        inputField: { width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #dddfe2', fontSize: '14px', boxSizing: 'border-box', marginTop: '0.5rem', marginBottom: '1rem' },
         textarea: { width: '100%', minHeight: '150px', padding: '10px', borderRadius: '6px', border: '1px solid #dddfe2', fontSize: '14px', boxSizing: 'border-box', marginTop: '1rem' },
         status: { textAlign: 'center', margin: '1.5rem 0', color: isLoading ? '#1877f2' : '#606770', fontWeight: 'bold' },
-        // === ARREGLO DE BUG (Línea 370) ===
-        // Faltaban los ':' y ',' en las propiedades top, left, right, y bottom
         modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 },
         modalContent: { backgroundColor: 'white', padding: '2rem', borderRadius: '8px', width: '90%', maxWidth: '600px', maxHeight: '80vh', overflowY: 'auto' },
         modalInput: { width: 'calc(100% - 100px)', padding: '10px', borderRadius: '6px', border: '1px solid #dddfe2' },
         modalButton: { padding: '10px', marginLeft: '10px' },
         instructionItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: '1px solid #eee', color: '#1c1e21' },
         deleteButton: { backgroundColor: '#fa3e3e', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer' },
-        // === ARREGLO DE BUG (Línea 376) ===
-        // Se corrigió '1Rrem' a '1rem'
         filenameDisplay: { fontWeight: 'bold', marginBottom: '1rem', color: '#606770', padding: '8px 12px', backgroundColor: '#f0f2f5', borderRadius: '6px', border: '1px solid #dddfe2' }
     };
 
@@ -384,15 +427,40 @@ ${businessSummary}
         <div style={styles.container}>
             <div style={{maxWidth: '800px', margin: '0 auto'}}>
                 <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
-                    <h1 style={{...styles.header, marginBottom: 0, textAlign: 'left'}}>Transcriptor y Resumidor</h1>
-                    <button style={styles.button} onClick={() => setIsModalOpen(true)}>Mejoras Permanentes</button>
+                    <h1 style={{...styles.header, marginBottom: 0, textAlign: 'left'}}>Transcriptor y Reescritor de Contenido</h1>
+                    <button style={styles.button} onClick={() => setIsModalOpen(true)}>Instrucciones Permanentes</button>
                 </div>
 
                 <div style={styles.card}>
-                    <h2>1. Sube tu archivo de audio</h2>
-                    <input type="file" accept="audio/*" onChange={handleFileChange} style={{marginTop: '1rem'}} />
-                    <button onClick={handleTranscribe} disabled={!file || isLoading} style={{...styles.button, ...( !file || isLoading ? styles.buttonDisabled : {}), display: 'block' }}>
-                        {isLoading && status.startsWith('Transcribiendo') ? 'Transcribiendo...' : 'Transcribir'}
+                    <h2>1. Fuente de Audio/Video</h2>
+                    
+                    {/* Campo para URL */}
+                    <label htmlFor="video-url" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>Pega el link de Video (TikTok, YouTube, Instagram)</label>
+                    <input 
+                        type="url" 
+                        id="video-url"
+                        value={videoUrl}
+                        onChange={handleUrlChange} 
+                        placeholder="Ej: https://www.youtube.com/watch?v=..."
+                        style={styles.inputField} 
+                        disabled={!!file}
+                    />
+
+                    <div style={{textAlign: 'center', margin: '1rem 0', color: '#606770'}}>— O —</div>
+                    
+                    {/* Campo para subir archivo */}
+                    <label htmlFor="audio-file" style={{ display: 'block', fontWeight: 'bold', marginBottom: '0.5rem' }}>Sube tu archivo de audio (MP3, M4A, etc.)</label>
+                    <input 
+                        type="file" 
+                        id="audio-file"
+                        accept="audio/*" 
+                        onChange={handleFileChange} 
+                        style={{marginTop: '0.5rem'}} 
+                        disabled={!!videoUrl.trim()}
+                    />
+                    
+                    <button onClick={handleTranscribe} disabled={isLoading || getInputSource() === 'none'} style={{...styles.button, ...( isLoading || getInputSource() === 'none' ? styles.buttonDisabled : {}), display: 'block', marginTop: '1.5rem' }}>
+                        {isLoading && status.startsWith('Transcribiendo') ? 'Transcribiendo...' : 'Transcribir y Extraer Contenido'}
                     </button>
                 </div>
                 
@@ -400,39 +468,34 @@ ${businessSummary}
 
                 {transcription && (
                     <div style={styles.card}>
-                        <h2>2. Transcripción</h2>
+                        <h2>2. Transcripción Base</h2>
+                        {file && <p style={styles.filenameDisplay}>Archivo: {file.name}</p>}
+                        {videoUrl && <p style={styles.filenameDisplay}>URL: {videoUrl}</p>}
                         <textarea style={styles.textarea} value={transcription} readOnly />
-                        {/* --- PASO 1: Modificado --- */}
-                        {/* Ahora el botón de Resumen de Negocio aparece aquí */}
-                        {!businessSummary && (
-                            <button onClick={handleGenerateBusinessSummary} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}>
-                                {isLoading && status.startsWith('Generando resumen de negocio') ? 'Generando...' : 'Generar Resumen de Negocio'}
+                        {!rewrittenContent && (
+                            <button onClick={handleGenerateRewrittenContent} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}>
+                                {isLoading && status.startsWith('Generando contenido') ? 'Generando...' : 'Generar Otra Manera de Decirlo'}
                             </button>
                         )}
                     </div>
                 )}
 
-                {/* --- PASO 1: Eliminada la tarjeta de Resumen General --- */}
-
-                {businessSummary && (
+                {rewrittenContent && (
                     <div style={styles.card}>
-                        <h2>4. Resumen de Negocio</h2>
-                        {file && <p style={styles.filenameDisplay}>Archivo: {file.name}</p>}
+                        <h2>3. Otra Manera de Decirlo</h2>
                         <textarea 
                             style={styles.textarea} 
-                            value={businessSummary}
-                            onChange={(e) => setBusinessSummary(e.target.value)}
+                            value={rewrittenContent}
+                            onChange={(e) => setRewrittenContent(e.target.value)}
                         />
                         <div style={{marginTop: '1.5rem', borderTop: '1px solid #eee', paddingTop: '1.5rem'}}>
-                            <h3>Mejorar Resumen de Negocio</h3>
-                            <p>Proporciona una instrucción para refinar el resumen anterior.</p>
+                            <h3>Mejorar Contenido Alternativo</h3>
+                            <p>Proporciona una instrucción para refinar el contenido anterior.</p>
                             <textarea
                                 style={{...styles.textarea, minHeight: '80px'}}
-                                placeholder="Ej: 'El cliente se llama Juan Pérez, no Juan Ramírez' o 'Enfócate más en el precio del pulpo'"
+                                placeholder="Ej: 'Añade un llamado a la acción al final para que me sigan en TikTok' o 'Cambia el tono a uno más serio y profesional'"
                                 value={improvementInstruction}
-                                // === ARREGLO DE BUG ===
-                                // Estaba usando 'setBusinessSummary' por error
-                                onChange={(e) => setImprovementInstruction(e.target.value)} 
+                                onChange={(e) => setImprovementInstruction(e.target.value)}
                             />
                             <button onClick={toggleRecording} style={{...styles.button, backgroundColor: isRecording ? '#fa3e3e' : '#42b72a'}}>
                                 {isRecording ? 'Detener Grabación' : 'Grabar Instrucciones'}
@@ -441,11 +504,7 @@ ${businessSummary}
                                 <button onClick={() => handleImproveSummary(false)} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {})}}>
                                     Aplicar Mejora Temporal
                                 </button>
-                                <button onClick={() => handleImproveSummary(true)} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {}), 
-                                    // === ARREGLO DE BUG ===
-                                    // Decía '1am' en lugar de '1rem'
-                                    marginLeft: '1rem', 
-                                    backgroundColor: '#36a420'}}>
+                                <button onClick={() => handleImproveSummary(true)} disabled={isLoading} style={{...styles.button, ...(isLoading ? styles.buttonDisabled : {}), marginLeft: '1rem', backgroundColor: '#36a420'}}>
                                     Aplicar y Guardar Mejora
                                 </button>
                             </div>
@@ -453,85 +512,85 @@ ${businessSummary}
                     </div>
                 )}
 
-                {businessSummary && (
+                {(transcription || rewrittenContent) && (
                     <div style={styles.card}>
-                        <h2>5. Exportar</h2>
-                        <p>Genera un archivo .txt con la transcripción y ambos resúmenes.</p>
+                        <h2>4. Exportar</h2>
+                        <p>Genera un archivo .txt con la transcripción y el contenido alternativo.</p>
                         <button onClick={handleGenerateDocument} style={styles.button}>
                             Generar Documento
                         </button>
                     </div>
                 )}
 
-                 {isModalOpen && (
-                    <div style={styles.modalOverlay} onClick={() => setIsModalOpen(false)}>
-                        <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-                            <h2>Mejoras Permanentes</h2>
-                            <p>Estas instrucciones se aplicarán a TODOS los resúmenes de negocio futuros.</p>
-                            
-                            <div style={{ display: 'flex', gap: '1rem', margin: '1rem 0', borderBottom: '1px solid #eee', paddingBottom: '1rem' }}>
-                                <input
-                                    type="file"
-                                    ref={importFileInputRef}
-                                    onChange={handleImportInstructions}
-                                    accept=".txt"
-                                    style={{ display: 'none' }}
-                                />
-                                <button onClick={() => importFileInputRef.current?.click()} style={{...styles.button, flex: 1, backgroundColor: '#42b72a'}}>
-                                    Importar desde Archivo
-                                </button>
-                                <button onClick={handleExportInstructions} style={{...styles.button, flex: 1}}>
-                                    Exportar a Archivo
-                                </button>
+                    {isModalOpen && (
+                        <div style={styles.modalOverlay} onClick={() => setIsModalOpen(false)}>
+                            <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
+                                <h2>Instrucciones Permanentes</h2>
+                                <p>Estas reglas se aplicarán a TODO el contenido alternativo futuro.</p>
+                                
+                                <div style={{ display: 'flex', gap: '1rem', margin: '1rem 0', borderBottom: '1px solid #eee', paddingBottom: '1rem' }}>
+                                    <input
+                                        type="file"
+                                        ref={importFileInputRef}
+                                        onChange={handleImportInstructions}
+                                        accept=".txt"
+                                        style={{ display: 'none' }}
+                                    />
+                                    <button onClick={() => importFileInputRef.current?.click()} style={{...styles.button, flex: 1, backgroundColor: '#42b72a'}}>
+                                        Importar desde Archivo
+                                    </button>
+                                    <button onClick={handleExportInstructions} style={{...styles.button, flex: 1}}>
+                                        Exportar a Archivo
+                                    </button>
+                                </div>
+                                
+                                <div style={{ margin: '1rem 0', display: 'flex' }}>
+                                    <input 
+                                        type="text"
+                                        value={newInstruction}
+                                        onChange={(e) => setNewInstruction(e.target.value)}
+                                        placeholder="Añadir nueva instrucción permanente"
+                                        style={styles.modalInput}
+                                        onKeyPress={(e) => { if (e.key === 'Enter') {
+                                            if (newInstruction && !globalInstructions.includes(newInstruction)) {
+                                                saveGlobalInstructions([...globalInstructions, newInstruction]);
+                                                setNewInstruction('');
+                                            }
+                                        }}}
+                                    />
+                                    <button 
+                                        onClick={() => {
+                                            if (newInstruction && !globalInstructions.includes(newInstruction)) {
+                                                saveGlobalInstructions([...globalInstructions, newInstruction]);
+                                                setNewInstruction('');
+                                            }
+                                        }}
+                                        style={{...styles.button, ...styles.modalButton}}
+                                    >
+                                        Añadir
+                                    </button>
+                                </div>
+                                <div>
+                                    {globalInstructions.length === 0 && <p>No hay instrucciones guardadas.</p>}
+                                    {globalInstructions.map((inst, index) => (
+                                        <div key={index} style={styles.instructionItem}>
+                                            <span style={{flex: 1, marginRight: '1rem'}}>{inst}</span>
+                                            <button 
+                                                onClick={() => {
+                                                    const updated = globalInstructions.filter((_, i) => i !== index);
+                                                    saveGlobalInstructions(updated);
+                                                }}
+                                                style={styles.deleteButton}
+                                            >
+                                                Eliminar
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                                <button onClick={() => setIsModalOpen(false)} style={{...styles.button, marginTop: '1rem'}}>Cerrar</button>
                             </div>
-                            
-                            <div style={{ margin: '1rem 0', display: 'flex' }}>
-                                <input 
-                                    type="text"
-                                    value={newInstruction}
-                                    onChange={(e) => setNewInstruction(e.target.value)}
-                                    placeholder="Añadir nueva instrucción permanente"
-                                    style={styles.modalInput}
-                                    onKeyPress={(e) => { if (e.key === 'Enter') {
-                                        if (newInstruction && !globalInstructions.includes(newInstruction)) {
-                                            saveGlobalInstructions([...globalInstructions, newInstruction]);
-                                            setNewInstruction('');
-                                        }
-                                    }}}
-                                />
-                                <button 
-                                    onClick={() => {
-                                        if (newInstruction && !globalInstructions.includes(newInstruction)) {
-                                            saveGlobalInstructions([...globalInstructions, newInstruction]);
-                                            setNewInstruction('');
-                                        }
-                                    }}
-                                    style={{...styles.button, ...styles.modalButton}}
-                                >
-                                    Añadir
-                                </button>
-                            </div>
-                            <div>
-                                {globalInstructions.length === 0 && <p>No hay instrucciones guardadas.</p>}
-                                {globalInstructions.map((inst, index) => (
-                                    <div key={index} style={styles.instructionItem}>
-                                        <span style={{flex: 1, marginRight: '1rem'}}>{inst}</span>
-                                        <button 
-                                            onClick={() => {
-                                                const updated = globalInstructions.filter((_, i) => i !== index);
-                                                saveGlobalInstructions(updated);
-                                            }}
-                                            style={styles.deleteButton}
-                                        >
-                                            Eliminar
-                                        </button>
-                                    </div>
-                                ))}
-                            </div>
-                            <button onClick={() => setIsModalOpen(false)} style={{...styles.button, marginTop: '1rem'}}>Cerrar</button>
                         </div>
-                    </div>
-                )}
+                    )}
             </div>
         </div>
     );
