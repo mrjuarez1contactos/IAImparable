@@ -47,7 +47,7 @@ Una vez que ejecutes `npm run dev`, la terminal te mostrará unas direcciones UR
 
 
 ---
-*Última actualización: API Key renovada con facturación de Google Cloud - 18/12/2025*
+*Última actualización: API Key renovada con facturación de Google Cloud - 18/12/2025* (corregida)
 
 
 ---
