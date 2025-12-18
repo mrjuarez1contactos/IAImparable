@@ -44,3 +44,7 @@ Una vez que ejecutes `npm run dev`, la terminal te mostrará unas direcciones UR
 *   **Network:** `http://192.1G.X.X:5173/` - **Esta es la que usarás en tu móvil.** Asegúrate de que tu móvil y tu computadora estén en la misma red Wi-Fi y escribe esta dirección en el navegador de tu móvil.
 
 ¡Y listo! Ya tienes tu aplicación de trabajo estable y funcionando. Cuando termines de usarla, simplemente cierra la ventana de la terminal. Para volver a usarla, solo tienes que repetir el paso 6.
+
+
+---
+*Última actualización: API Key renovada con facturación de Google Cloud - 18/12/2025*
